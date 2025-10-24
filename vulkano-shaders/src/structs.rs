@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use std::{cmp::Ordering, num::NonZero};
 use syn::{Error, Ident, Result};
-use vulkano::shader::spirv::{Decoration, Id, Instruction};
+use vulkano::shader::spirv::{Decoration, Id, Instruction, StorageClass};
 
 #[derive(Default)]
 pub struct TypeRegistry {
@@ -110,7 +110,6 @@ pub(super) fn write_structs(
         .filter(|&(struct_id, _)| has_defined_layout(shader, struct_id))
     {
         let struct_ty = TypeStruct::new(shader, struct_id, member_type_ids)?;
-
         // Register the type if needed.
         if !type_registry.register_struct(shader, &struct_ty)? {
             continue;
@@ -133,6 +132,24 @@ pub(super) fn write_structs(
             #[repr(C)]
             #struct_ser
         })
+    }
+
+    for (var_id, _) in shader
+        .spirv
+        .global_variables()
+        .iter()
+        .filter_map(|instruction| match *instruction {
+            Instruction::Variable {
+                result_id,
+                storage_class,
+                ..
+            } => Some((result_id, storage_class)),
+            _ => None,
+        })
+        .filter(|&(_, storage_class)| matches!(storage_class, StorageClass::Uniform))
+    {
+        let var = VariableInfo::new(shader, var_id).unwrap();
+        println!("Variable: {var:?}");
     }
 
     Ok(structs)
@@ -680,6 +697,100 @@ impl TypeArray {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct VariableInfo {
+    ident: Ident,
+    binding_point: u32,
+    descriptor_set: u32,
+    storage_class: StorageClass,
+    ty: Ident,
+}
+
+impl VariableInfo {
+    fn new(shader: &Shader, variable_id: Id) -> Result<Self> {
+        let id_variable = shader.spirv.id(variable_id);
+
+        let ident: Ident = id_variable
+            .names()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Name { name, .. } => syn::parse_str::<Ident>(name).ok(),
+                _ => None,
+            })
+            .unwrap()
+            .clone();
+
+        let binding_point = *id_variable
+            .decorations()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Decorate {
+                    decoration: Decoration::Binding { binding_point },
+                    ..
+                } => Some(binding_point),
+                _ => None,
+            })
+            .unwrap();
+
+        let descriptor_set = *id_variable
+            .decorations()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::Decorate {
+                    decoration: Decoration::DescriptorSet { descriptor_set },
+                    ..
+                } => Some(descriptor_set),
+                _ => None,
+            })
+            .unwrap();
+
+        let storage_class = *match id_variable.instruction() {
+            Instruction::Variable { storage_class, .. } => Some(storage_class),
+            _ => None,
+        }
+        .unwrap();
+
+        let res_ty_id = shader
+            .spirv
+            .id(id_variable.instruction().result_type_id().unwrap());
+        let ty_id_info = match *res_ty_id.instruction() {
+            Instruction::TypePointer { ty, .. } => Some(shader.spirv.id(ty)),
+            _ => None,
+        }
+        .unwrap();
+        let ty = ty_id_info
+            .names()
+            .iter()
+            .find_map(|instruction| {
+                match instruction {
+                    Instruction::Name { name, .. } => {
+                        // Replace chars that could potentially cause the ident to be invalid with "_".
+                        // For example, Rust-GPU names structs by their fully qualified rust name (e.g.
+                        // "foo::bar::MyStruct") in which the ":" is an invalid character for idents.
+                        let mut name =
+                            name.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '_'), "_");
+                        if name.starts_with(|c: char| !c.is_ascii_alphabetic()) {
+                            name.insert(0, '_');
+                        }
+
+                        // Worst case: invalid idents will get the UnnamedX name below
+                        syn::parse_str(&name).ok()
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap();
+
+        Ok(VariableInfo {
+            ident,
+            binding_point,
+            descriptor_set,
+            storage_class,
+            ty,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TypeStruct {
     ident: Ident,
     members: Vec<Member>,
@@ -692,21 +803,23 @@ impl TypeStruct {
         let ident = id_info
             .names()
             .iter()
-            .find_map(|instruction| match instruction {
-                Instruction::Name { name, .. } => {
-                    // Replace chars that could potentially cause the ident to be invalid with "_".
-                    // For example, Rust-GPU names structs by their fully qualified rust name (e.g.
-                    // "foo::bar::MyStruct") in which the ":" is an invalid character for idents.
-                    let mut name =
-                        name.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '_'), "_");
-                    if name.starts_with(|c: char| !c.is_ascii_alphabetic()) {
-                        name.insert(0, '_');
-                    }
+            .find_map(|instruction| {
+                match instruction {
+                    Instruction::Name { name, .. } => {
+                        // Replace chars that could potentially cause the ident to be invalid with "_".
+                        // For example, Rust-GPU names structs by their fully qualified rust name (e.g.
+                        // "foo::bar::MyStruct") in which the ":" is an invalid character for idents.
+                        let mut name =
+                            name.replace(|c: char| !(c.is_ascii_alphanumeric() || c == '_'), "_");
+                        if name.starts_with(|c: char| !c.is_ascii_alphabetic()) {
+                            name.insert(0, '_');
+                        }
 
-                    // Worst case: invalid idents will get the UnnamedX name below
-                    syn::parse_str(&name).ok()
+                        // Worst case: invalid idents will get the UnnamedX name below
+                        syn::parse_str(&name).ok()
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
             .unwrap_or_else(|| format_ident!("Unnamed{}", struct_id.as_raw()));
 
