@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, ToTokens, TokenStreamExt};
 use std::{cmp::Ordering, num::NonZero};
 use syn::{Error, Ident, Result};
-use vulkano::shader::spirv::{Decoration, Id, Instruction, StorageClass};
+use vulkano::shader::spirv::{Decoration, ExecutionModel, Id, Instruction, StorageClass};
 
 #[derive(Default)]
 pub struct TypeRegistry {
@@ -152,9 +152,22 @@ pub(super) fn write_structs(
         println!("Variable: {var:?}");
     }
 
-    let input_info = InputInfo::new(shader).unwrap();
-
-    println!("Input: {input_info:?}");
+    if shader
+        .spirv
+        .entry_points()
+        .iter()
+        .find_map(|instruction| match *instruction {
+            Instruction::EntryPoint {
+                execution_model: ExecutionModel::Vertex,
+                ..
+            } => Some(()),
+            _ => None,
+        })
+        .is_some()
+    {
+        let input_info = InputInfo::new(shader).unwrap();
+        println!("Input: {input_info:?}");
+    }
 
     Ok(structs)
 }
