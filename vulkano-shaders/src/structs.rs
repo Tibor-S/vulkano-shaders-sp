@@ -166,6 +166,14 @@ pub(super) fn write_structs(
         .is_some()
     {
         let input_info = InputInfo::new(shader).unwrap();
+        let custom_derives = input.custom_derives.as_slice();
+        let input_ser = Serializer(&input_info, input);
+        structs.extend(quote! {
+            #[allow(non_camel_case_types, non_snake_case)]
+            #[derive(::vulkano::buffer::BufferContents, ::vulkano::pipeline::graphics::vertex_input::Vertex #(, #custom_derives )* )]
+            #[repr(C)]
+            #input_ser
+        });
         println!("Input: {input_info:?}");
     }
 
@@ -1281,6 +1289,28 @@ impl ToTokens for Serializer<'_, TypeStruct> {
     }
 }
 
+impl ToTokens for Serializer<'_, InputInfo> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let struct_ident: Ident = syn::parse_str("Input").unwrap();
+        let member_idents = self.0.members.iter().map(|member| &member.ident);
+        let member_formats = self.0.members.iter().map(|member| {
+            syn::parse_str::<Ident>(&format!("{:?}", as_format(&member.ty).unwrap())).unwrap()
+        });
+        let mut member_types = Vec::new();
+
+        for member in self.0.members.iter() {
+            let ser = Serializer(&member.ty, self.1);
+            member_types.push(ser.into_token_stream());
+        }
+
+        tokens.extend(quote! {
+            pub struct #struct_ident {
+                #( #[format(#member_formats)] pub #member_idents: #member_types, )*
+            }
+        })
+    }
+}
+
 /// Helper for wrapping tokens in `Padded`. Doesn't wrap if the padding is `0`.
 struct Padded<T>(T, usize);
 
@@ -1295,4 +1325,309 @@ impl<T: ToTokens> ToTokens for Padded<T> {
             tokens.extend(quote! { ::vulkano::padded::Padded<#ty, #padding> });
         }
     }
+}
+
+fn as_format(ty: &Type) -> Result<::vulkano::format::Format> {
+    Ok(match ty {
+        Type::Scalar(TypeScalar::Float(TypeFloat {
+            width: FloatWidth::W16,
+        })) => ::vulkano::format::Format::R16_SFLOAT,
+        Type::Scalar(TypeScalar::Float(TypeFloat {
+            width: FloatWidth::W32,
+        })) => ::vulkano::format::Format::R32_SFLOAT,
+        Type::Scalar(TypeScalar::Float(TypeFloat {
+            width: FloatWidth::W64,
+        })) => ::vulkano::format::Format::R64_SFLOAT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W8,
+            signed: false,
+        })) => ::vulkano::format::Format::R8_UINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W16,
+            signed: false,
+        })) => ::vulkano::format::Format::R16_UINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W32,
+            signed: false,
+        })) => ::vulkano::format::Format::R32_UINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W64,
+            signed: false,
+        })) => ::vulkano::format::Format::R64_UINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W8,
+            signed: true,
+        })) => ::vulkano::format::Format::R8_SINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W16,
+            signed: true,
+        })) => ::vulkano::format::Format::R16_SINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W32,
+            signed: true,
+        })) => ::vulkano::format::Format::R32_SINT,
+        Type::Scalar(TypeScalar::Int(TypeInt {
+            width: IntWidth::W64,
+            signed: true,
+        })) => ::vulkano::format::Format::R64_SINT,
+        Type::Pointer(_) => bail!("No format for pointer"),
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W16,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R16G16_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W32,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R32G32_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W64,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R64G64_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W16,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R16G16B16_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W32,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R32G32B32_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W64,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R64G64B64_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W16,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R16G16B16A16_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W32,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R32G32B32A32_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Float(TypeFloat {
+                    width: FloatWidth::W64,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R64G64B64A64_SFLOAT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R8G8_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R16G16_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R32G32_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R64G64_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R8G8_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R16G16_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R32G32_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C2,
+        }) => ::vulkano::format::Format::R64G64_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R8G8B8_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R16G16B16_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R32G32B32_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R64G64B64_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R8G8B8_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R16G16B16_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R32G32B32_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C3,
+        }) => ::vulkano::format::Format::R64G64B64_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R8G8B8A8_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R16G16B16A16_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R32G32B32A32_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: false,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R64G64B64A64_UINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W8,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R8G8B8A8_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W16,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R16G16B16A16_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W32,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R32G32B32A32_SINT,
+        Type::Vector(TypeVector {
+            component_type:
+                TypeScalar::Int(TypeInt {
+                    width: IntWidth::W64,
+                    signed: true,
+                }),
+            component_count: ComponentCount::C4,
+        }) => ::vulkano::format::Format::R64G64B64A64_SINT,
+        Type::Matrix(_) => bail!("No format for matrix"),
+        Type::Array(_) => bail!("No format for array"),
+        Type::Struct(_) => bail!("No format for struct"),
+    })
 }
