@@ -152,6 +152,10 @@ pub(super) fn write_structs(
         println!("Variable: {var:?}");
     }
 
+    let input_info = InputInfo::new(shader).unwrap();
+
+    println!("Input: {input_info:?}");
+
     Ok(structs)
 }
 
@@ -693,6 +697,79 @@ impl TypeArray {
 
     fn scalar_alignment(&self) -> Alignment {
         self.element_type.scalar_alignment()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InputMember {
+    ident: Ident,
+    location: u32,
+    ty: Type,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InputInfo {
+    members: Vec<InputMember>,
+}
+
+impl InputInfo {
+    fn new(shader: &Shader) -> Result<Self> {
+        let member_ids = shader.spirv.names().iter().filter_map(|instruction| {
+            let id = match *instruction {
+                Instruction::Name { target, .. } => shader.spirv.id(target),
+                _ => return None,
+            };
+            match *id.instruction() {
+                Instruction::Variable {
+                    storage_class: StorageClass::Input,
+                    ..
+                } => Some(id),
+                _ => None,
+            }
+        });
+
+        let mut ret = InputInfo { members: vec![] };
+
+        for id in member_ids {
+            let ident = id
+                .names()
+                .iter()
+                .find_map(|instruction| match instruction {
+                    Instruction::Name { name, .. } => syn::parse_str(name).ok(),
+                    _ => None,
+                })
+                .unwrap();
+
+            let location = id
+                .decorations()
+                .iter()
+                .find_map(|instruction| match *instruction {
+                    Instruction::Decorate {
+                        decoration: Decoration::Location { location },
+                        ..
+                    } => Some(location),
+                    _ => None,
+                })
+                .unwrap_or(0);
+
+            let ty_ptr_id = id.instruction().result_type_id().unwrap();
+            let ty_ptr = shader.spirv.id(ty_ptr_id);
+            let ty_id = match *ty_ptr.instruction() {
+                Instruction::TypePointer { ty, .. } => ty,
+                _ => ty_ptr_id,
+            };
+            let ty = Type::new(shader, ty_id).unwrap();
+
+            ret.members.push(InputMember {
+                ident,
+                location,
+                ty,
+            });
+        }
+
+        ret.members.sort_by_key(|member| member.location);
+
+        Ok(ret)
     }
 }
 
